@@ -1,5 +1,4 @@
 #define _CRT_SECURE_NO_WARNINGS
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -13,120 +12,158 @@ double GetWindowTime(void)
 
     QueryPerformanceCounter(&liEndCounter);
     QueryPerformanceFrequency(&liFrequency);
-
+   
     return(liEndCounter.QuadPart / (double)(liFrequency.QuadPart) * 1000.0);
 }; // [ms]
 
-#define   N_STEP          (int)   ( FINAL_TIME*SAMPLING_FREQ )
-#define   FINAL_TIME      (double)(            20.0 )
-#define   SAMPLING_FREQ      (double)(               200 )
+#define   N_STEP            (int)   ( FINAL_TIME*SAMPLING_FREQ )
+#define   FINAL_TIME        (double)( 20.0 )
+#define   SAMPLING_FREQ     (double)( 200 )
 #define   SAMPLING_TIME     (double)( 1.0/SAMPLING_FREQ )
-#define   UNIT_PI         (double)( 3.14159265358979  )
-
-// ------------------------------------------------------------------------------------------
+#define   UNIT_PI           (double)( 3.14159265358979 )
 
 void main(void)
 {
     FILE* pFile;
     int32 error;
 
-    double      time_curr = 0.0;
-    double      time_init = 0.0;
-    double      time = 0.0;
-    char      OutFileName[100] = { "" };
-    double      Freq = 10.0;
+    double time_curr = 0.0;
+    double time_init = 0.0;
+    double time = 0.0;
+    char OutFileName[100] = { "" };
 
-    int         idx = 0;
-    int         count = 0;
+    // [Á¦¾î ÆÄ¶ó¹ÌÅÍ]
+    double Freq = 10.0;          // »çÀÎÆÄ ÁÖÆÄ¼ö
+    double Amplitude = 1;     // »çÀÎÆÄ ÁøÆø
 
-    unsigned   i = 0;
-    double      Standard = 1.0;
-    double      OutData[N_STEP] = { 0.0, };
-    double      OutTime[N_STEP] = { 0.0, };
-    double      OutVcmd2[N_STEP] = { 0.0, }; // [ao1 ì €ìž¥ìš©]
-    double      OutVcmd[N_STEP] = { 0.0, };
+    int idx = 0;
+    int count = 0;
 
-    double      Vcmd = 0.0;
-    double      Vcmd2 = 0.0;      // [ao1 ì¶”ê°€] ao1 ì¶œë ¥ ì „ì•• (ai0 ì‹ í˜¸ ë³µì‚¬ë³¸)
-    float64      Vin = 0.0;
+    // [µ¥ÀÌÅÍ ÀúÀå¿ë ¹è¿­]
+    double OutTime[N_STEP] = { 0.0, };
+    double OutAO0[N_STEP] = { 0.0, };
+    double OutAO1[N_STEP] = { 0.0, };
+    double OutAI2[N_STEP] = { 0.0, };
+    double OutAI3[N_STEP] = { 0.0, };
 
-    TaskHandle   taskAI = 0;
-    TaskHandle   taskAO = 0;
-    TaskHandle   taskAO1 = 0;     // [ao1 ì¶”ê°€] Task í•¸ë“¤
+    double Vcmd_ao0 = 0.0;
+    double Vcmd_ao1 = 0.0;
 
+    float64 readArray[2] = { 0.0, 0.0 };
+    int32 sampsPerChanRead;
+
+    TaskHandle taskAI = 0;
+    TaskHandle taskAO0 = 0;
+    TaskHandle taskAO1 = 0;
+
+    // 1. Task »ý¼º
     DAQmxCreateTask("", &taskAI);
-    DAQmxCreateTask("", &taskAO);
-    DAQmxCreateTask("", &taskAO1); // [ao1 ì¶”ê°€] Task ìƒì„±
+    DAQmxCreateTask("", &taskAO0);
+    DAQmxCreateTask("", &taskAO1);
 
-    DAQmxCreateAIVoltageChan(taskAI, "Dev2/ai0", "", DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, "");
-    DAQmxCreateAOVoltageChan(taskAO, "Dev2/ao0", "", 0.0, 5.0, DAQmx_Val_Volts, "");
-    DAQmxCreateAOVoltageChan(taskAO1, "Dev2/ao1", "", 0.0, 5.0, DAQmx_Val_Volts, ""); // [ao1 ì¶”ê°€] Dev2/ao1 ì±„ë„ ì—´ê¸° (0~5V ì¶œë ¥)
+    // 2. Ã¤³Î ¼³Á¤
+    DAQmxCreateAIVoltageChan(taskAI, "Dev3/ai2, Dev3/ai3", "", DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, "");
+    DAQmxCreateAOVoltageChan(taskAO0, "Dev3/ao0", "", 0.0, 5.0, DAQmx_Val_Volts, "");
+    DAQmxCreateAOVoltageChan(taskAO1, "Dev3/ao1", "", 0.0, 5.0, DAQmx_Val_Volts, "");
 
+    // 3. Task ½ÃÀÛ
     DAQmxStartTask(taskAI);
-    DAQmxStartTask(taskAO);
+    DAQmxStartTask(taskAO0);
+    DAQmxStartTask(taskAO1);
 
-    double time_test = GetWindowTime();
+    // [ÃÊ±âÈ­ ¼Â¾÷] 
+    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL); // ½ºÀ§Ä¡ OFF
+    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL); // Á¤Áö
 
-    printf("Press any key to start the program.... \n");
+    printf("ÃÊ±âÈ­ ¿Ï·á (AO0: 0V, AO1: 2.5V).\n");
+    printf("ÇÁ·Î±×·¥À» ½ÃÀÛÇÏ°í Áü¹ú ½ºÀ§Ä¡¸¦ ÄÑ·Á¸é ¾Æ¹« Å°³ª ´©¸£¼¼¿ä...\n");
+    printf("¡Ø ±¸µ¿ Áß ±ä±Þ Á¤ÁöÇÏ·Á¸é '½ºÆäÀÌ½º¹Ù(Spacebar)'¸¦ ´©¸£¼¼¿ä.\n");
     getchar();
+
+    // ½ÃÀÛ Àü Å°º¸µå ¹öÆÛ ºñ¿ì±â (¿ÀÀÛµ¿ ¹æÁö)
+    GetAsyncKeyState(VK_SPACE);
 
     time_init = GetWindowTime();
     time_curr = time_init;
+
+    // Á¦¾î ·çÇÁ ½ÃÀÛ
     do
     {
-        time = (time_curr - time_init) * 0.001;
+        time = (time_curr - time_init) * 0.001; // [sec]
 
-        /* DAQ Writing : Analog Output */
-        Vcmd = Standard + 1.0 * (cos(2.0 * UNIT_PI * Freq * time));
-        DAQmxWriteAnalogScalarF64(taskAO, 1.0, 5.0, Vcmd, NULL);    // ì•„ë‚ ë¡œê·¸ ìŠ¤ì¼€ì¼ë¡œ ì¶œë ¥ 
+        /* -------------------------------------------------------------
+           [±ä±Þ Á¤Áö È®ÀÎ] : ½ºÆäÀÌ½º¹Ù ÀÔ·Â °¨Áö
+        --------------------------------------------------------------*/
+        if (GetAsyncKeyState(VK_SPACE) & 0x8000)
+        {
+            printf("\n[±ä±Þ Á¤Áö] ½ºÆäÀÌ½º¹Ù ÀÔ·Â °¨Áö! Á¦¾î ·çÇÁ¸¦ Áï½Ã Á¾·áÇÕ´Ï´Ù.\n");
+            break; // ·çÇÁ Å»Ãâ
+        }
 
-        /* DAQ Reading */
-        error = DAQmxReadAnalogScalarF64(taskAI, 10.0, &Vin, NULL);
+        /* -------------------------------------------------------------
+           [DAQ Writing]
+        --------------------------------------------------------------*/
+        Vcmd_ao0 = 3.0;
+        DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, Vcmd_ao0, NULL);
+
+        Vcmd_ao1 = 2.5 + Amplitude * sin(2.0 * UNIT_PI * Freq * time);
+        DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, Vcmd_ao1, NULL);
+
+        /* -------------------------------------------------------------
+           [DAQ Reading]
+        --------------------------------------------------------------*/
+        error = DAQmxReadAnalogF64(taskAI, 1, 10.0, DAQmx_Val_GroupByChannel, readArray, 2, &sampsPerChanRead, NULL);
         if (error != 0)
         {
             char errBuff[2048];
             DAQmxGetExtendedErrorInfo(errBuff, 2048);
-            printf("DAQ error: %s\n", errBuff);
-        }
-        else
-        {
-            Vin += 2.5;
-
+            printf("DAQ ÀÐ±â ¿¡·¯: %s\n", errBuff);
         }
 
-        /* 3. [ao1 í•µì‹¬ ìˆ˜ì •] DAQ Writing : Analog Output 1 (ao1) -> ai0 ì‹ í˜¸(Vin) ê·¸ëŒ€ë¡œ ì˜ê¸° */
-        Vcmd2 = Vin; // ë°©ê¸ˆ ì½ì–´ì„œ 2.5V ë”í•´ì§„ Vin ê°’ì„ Vcmd2ì— ë³µì‚¬
-        DAQmxWriteAnalogScalarF64(taskAO1, 1.0, 5.0, Vcmd2, NULL);
-
-        /* Memory Write */
+        /* -------------------------------------------------------------
+           [Data Logging]
+        --------------------------------------------------------------*/
         OutTime[count] = time;
-        OutVcmd[count] = Vcmd;
-        OutVcmd2[count] = Vcmd2;      // [ao1] ë°”ì´íŒ¨ìŠ¤ëœ ì‹ í˜¸ ê¸°ë¡
-        OutData[count] = Vin;
+        OutAO0[count] = Vcmd_ao0;
+        OutAO1[count] = Vcmd_ao1;
+        OutAI2[count] = readArray[0];
+        OutAI3[count] = readArray[1];
 
-        /* check the simulation time and loop count */
+        /* »ùÇÃ¸µ Å¸ÀÓ À¯Áö ¹× ·çÇÁ Ã¼Å© */
         while (1)
         {
             time_curr = GetWindowTime();
-
             if (time_curr - time_init - count * SAMPLING_TIME * 1000 >= (SAMPLING_TIME * 1000.0)) break;
         }
     } while (count++ < N_STEP - 1);
 
+    // [Á¾·á ½ÃÄö½º] ·Îº¿ Á¤Áö¸¦ À§ÇØ Àü¾Ð ÃÊ±âÈ­ (Á¤»ó Á¾·á ¹× ºñ»ó Á¤Áö ¸ðµÎ Àû¿ë)
+    printf("\n·Îº¿À» Á¤Áö À§Ä¡(AO0: 0V, AO1: 2.5V)·Î º¹±Í½ÃÅµ´Ï´Ù...\n");
+    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL); // ½ºÀ§Ä¡ OFF
+    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL); // Á¤Áö
+
+    // Task Á¤Áö ¹× ÀÚ¿ø ÇØÁ¦
     DAQmxStopTask(taskAI);
-    DAQmxStopTask(taskAO);
-    DAQmxStopTask(taskAO1); // [ao1 ì¶”ê°€] Task ì •ì§€
+    DAQmxStopTask(taskAO0);
+    DAQmxStopTask(taskAO1);
 
-    /* Data Print */
+    DAQmxClearTask(taskAI);
+    DAQmxClearTask(taskAO0);
+    DAQmxClearTask(taskAO1);
+
+    /* ÆÄÀÏ ÀúÀå */
     sprintf(OutFileName, "%1.1f", SAMPLING_FREQ);
-
     pFile = fopen(strcat(OutFileName, "_data.out"), "w+t");
 
-    for (idx = 0; idx < N_STEP; idx++)
-    {
-        // íŒŒì¼ì— Vcmd2(ao1 ì¶œë ¥) ê°’ë„ ê°™ì´ ì €ìž¥
-        fprintf(pFile, "%20.10f %20.10f %20.10f %20.10f\n", OutTime[idx], OutVcmd[idx], OutVcmd2[idx], OutData[idx]);
-    }
+    fprintf(pFile, "Time[s]\t\tAO0(Switch)\tAO1(Sine)\tAI2(Read)\tAI3(Read)\n");
 
+    // [¼öÁ¤] ±ä±Þ Á¤Áö ½Ã count°¡ N_STEPº¸´Ù ÀÛÀ¸¹Ç·Î, ½ÇÁ¦·Î ±â·ÏµÈ ºÎºÐ(count)±îÁö¸¸ ÀúÀåÇÕ´Ï´Ù.
+    for (idx = 0; idx < count; idx++)
+    {
+        fprintf(pFile, "%20.10f %20.10f %20.10f %20.10f %20.10f\n",
+            OutTime[idx], OutAO0[idx], OutAO1[idx], OutAI2[idx], OutAI3[idx]);
+    }
     fclose(pFile);
+
+    printf("Á¦¾î ¿Ï·á ¹× µ¥ÀÌÅÍ ÀúÀå ¼º°ø. (ÀúÀåµÈ µ¥ÀÌÅÍ °³¼ö: %d)\n", count);
 }

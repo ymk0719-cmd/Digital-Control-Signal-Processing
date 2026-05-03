@@ -314,5 +314,5 @@ void main(void)
     printf("\n[완료] 모든 데이터가 '%s' 폴더에 저장되었습니다.\n", outputDir);
     printf("Vg_offset = %.6f V,  K_gimbal = %.4f (rad/s)/V\n",
         Vg_offset, K_GIMBAL);
-    printf("총 %d 스텝 실행됨.\n", emergencyStop ? step : N_STEPS);
+    // printf("총 %d 스텝 실행됨.\n", emergencyStop ? step : N_STEPS);   -> 이건 멀까요
 }

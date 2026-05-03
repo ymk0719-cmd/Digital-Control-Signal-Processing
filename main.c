@@ -70,9 +70,7 @@ double CalculateGyroBias(TaskHandle taskAI, int nSamples)
 
     for (int k = 1; k <= nSamples; k++)
     {
-        DAQmxReadAnalogF64(taskAI, 1, 10.0,
-            DAQmx_Val_GroupByChannel,
-            readArray, 2, &sampsPerChanRead, NULL);
+        DAQmxReadAnalogF64(taskAI, 1, 10.0, DAQmx_Val_GroupByChannel, readArray, 2, &sampsPerChanRead, NULL);
 
         double y_k = readArray[0];
         y_bar = (1.0 - 1.0 / k) * y_bar + (1.0 / k) * y_k;
@@ -125,7 +123,7 @@ void main(void)
     double bufVg[N_HOLD];
     double bufPot[N_HOLD];
     double bufOmega[N_HOLD];
-
+    
     /* =================================================================
        1. Task 생성 및 채널 설정
     ================================================================= */
@@ -133,17 +131,14 @@ void main(void)
     DAQmxCreateTask("", &taskAO0);
     DAQmxCreateTask("", &taskAO1);
 
-    DAQmxCreateAIVoltageChan(taskAI, "Dev3/ai2, Dev3/ai3", "",
-        DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, "");
-    DAQmxCreateAOVoltageChan(taskAO0, "Dev3/ao0", "",
-        0.0, 5.0, DAQmx_Val_Volts, "");
-    DAQmxCreateAOVoltageChan(taskAO1, "Dev3/ao1", "",
-        0.0, 5.0, DAQmx_Val_Volts, "");
+    DAQmxCreateAIVoltageChan(taskAI, "Dev3/ai2, Dev3/ai3", "", DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, "");
+    DAQmxCreateAOVoltageChan(taskAO0, "Dev3/ao0", "", 0.0, 5.0, DAQmx_Val_Volts, "");
+    DAQmxCreateAOVoltageChan(taskAO1, "Dev3/ao1", "", 0.0, 5.0, DAQmx_Val_Volts, "");
 
     DAQmxStartTask(taskAI);
     DAQmxStartTask(taskAO0);
     DAQmxStartTask(taskAO1);
-
+    
     /* =================================================================
        2. 초기화: 스위치 OFF, 모터 정지
     ================================================================= */

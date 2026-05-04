@@ -8,39 +8,39 @@
 #include "NIDAQmx.h"
 
 /* =====================================================================
-   [시간 함수] ? 현재 시각을 ms 단위로 반환
+   [Time Function] Returns current time in ms
    ===================================================================== */
 double GetWindowTime(void)
 {
-    LARGE_INTEGER liCounter, liFrequency;           // [수정1] liEndCounter → liCounter (의미에 맞게)
+    LARGE_INTEGER liCounter, liFrequency;
     QueryPerformanceCounter(&liCounter);
     QueryPerformanceFrequency(&liFrequency);
     return (liCounter.QuadPart / (double)(liFrequency.QuadPart) * 1000.0);
 } // [ms]
 
 /* =====================================================================
-   [매크로 정의]
+   [Macro Definitions]
    ===================================================================== */
 #define   SAMPLING_FREQ     (double)( 200.0 )
 #define   SAMPLING_TIME     (double)( 1.0 / SAMPLING_FREQ )
-#define   HOLD_TIME         (double)( 10.0 )         // 각 전압 유지 시간 [sec]
-#define   N_HOLD            (int)   ( HOLD_TIME * SAMPLING_FREQ + 100 )  // [수정2] 여유 버퍼 +100
+#define   HOLD_TIME         (double)( 10.0 )         // voltage hold time per step [sec]
+#define   N_HOLD            (int)   ( HOLD_TIME * SAMPLING_FREQ + 100 )  // buffer with margin
 
-#define   N_BIAS            (int)   ( 200 )           // bias 추정 샘플 수 (1초)
+#define   N_BIAS            (int)   ( 200 )           // number of samples for bias estimation (1 sec)
 #define   UNIT_PI           (double)( 3.14159265358979 )
 
    // -----------------------------------------------------------------------
-   // [자이로 Scale Factor]
+   // [Gyro Scale Factor]
    //   k_g = 0.67 [mV/(deg/s)]
-   //   ω_h [rad/s] = (V_g - V_g_offset) [V] × 1000 [mV/V] / 0.67 [mV/(deg/s)] × (π/180)
+   //   omega_h [rad/s] = (V_g - V_g_offset) [V] x 1000 [mV/V] / 0.67 [mV/(deg/s)] x (pi/180)
    // -----------------------------------------------------------------------
-#define   K_GIMBAL          (double)( 1000.0 / 0.67 * UNIT_PI / 180.0 )  // ? 26.05 [(rad/s)/V]
+#define   K_GIMBAL          (double)( 1000.0 / 0.67 * UNIT_PI / 180.0 )  // ~26.05 [(rad/s)/V]
 
 /* =====================================================================
-   [전압 스텝 시퀀스 생성]
-   2.5V 기준으로 ±0.1 교대 증가:
+   [Voltage Step Sequence]
+   Alternating +/- from 2.5V center in 0.1V increments:
      2.6, 2.4, 2.7, 2.3, 2.8, 2.2, ... , 5.0, 0.0
-   총 50스텝 (CW/CCW 교대 → 선 꼬임 방지)
+   Total 50 steps (CW/CCW alternating to prevent wire tangling)
    ===================================================================== */
 #define   N_STEPS           50
 
@@ -57,8 +57,8 @@ void BuildVoltageSequence(double voltSeq[N_STEPS])
 }
 
 /* =====================================================================
-   [CalculateGyroBias 함수]
-   점화식:  ?? = (1 - 1/k)*???₁ + (1/k)*y?,  ?? = 0
+   [CalculateGyroBias]
+   Recursive mean:  y_bar_k = (1 - 1/k)*y_bar_{k-1} + (1/k)*y_k,  y_bar_0 = 0
    ===================================================================== */
 double CalculateGyroBias(TaskHandle taskAI, int nSamples)
 {
@@ -66,7 +66,7 @@ double CalculateGyroBias(TaskHandle taskAI, int nSamples)
     int32   sampsPerChanRead;
     double  y_bar = 0.0;
 
-    printf("[Gyro Bias 추정 시작] %d 샘플 수집 중...\n", nSamples);
+    printf("[Gyro Bias Estimation] Collecting %d samples...\n", nSamples);
 
     for (int k = 1; k <= nSamples; k++)
     {
@@ -78,12 +78,12 @@ double CalculateGyroBias(TaskHandle taskAI, int nSamples)
         Sleep(5); // 200Hz = 5ms
     }
 
-    printf("[Gyro Bias 추정 완료] Vg_offset = %.6f V\n\n", y_bar);
+    printf("[Gyro Bias Done] Vg_offset = %.6f V\n\n", y_bar);
     return y_bar;
 }
 
 /* =====================================================================
-   [main 함수]
+   [main]
    ===================================================================== */
 void main(void)
 {
@@ -93,7 +93,7 @@ void main(void)
     double  time_elapsed = 0.0;
 
     /* -----------------------------------------------------------------
-       DAQ Task 핸들
+       DAQ Task handles
     ----------------------------------------------------------------- */
     TaskHandle taskAI = 0;
     TaskHandle taskAO0 = 0;
@@ -103,20 +103,20 @@ void main(void)
     int32   sampsPerChanRead;
 
     /* -----------------------------------------------------------------
-       출력 폴더 생성                                [수정3] 특수문자 제거
+       Create output directory
     ----------------------------------------------------------------- */
     const char* outputDir = "motor_sweep_data";
     _mkdir(outputDir);
-    printf("출력 폴더: %s\n\n", outputDir);
+    printf("Output folder: %s\n\n", outputDir);
 
     /* -----------------------------------------------------------------
-       전압 시퀀스 준비
+       Prepare voltage sequence
     ----------------------------------------------------------------- */
     double voltSeq[N_STEPS];
     BuildVoltageSequence(voltSeq);
 
     /* -----------------------------------------------------------------
-       데이터 버퍼 (스텝 1개분)
+       Data buffer (one step)
     ----------------------------------------------------------------- */
     double bufTime[N_HOLD];
     double bufVcmd[N_HOLD];
@@ -125,7 +125,7 @@ void main(void)
     double bufOmega[N_HOLD];
 
     /* =================================================================
-       1. Task 생성 및 채널 설정
+       1. Create tasks and configure channels
     ================================================================= */
     DAQmxCreateTask("", &taskAI);
     DAQmxCreateTask("", &taskAO0);
@@ -140,10 +140,10 @@ void main(void)
     DAQmxStartTask(taskAO1);
 
     /* =================================================================
-       2. 초기화: 스위치 OFF, 모터 정지
+       2. Initialize: switch OFF, motor stop
     ================================================================= */
-    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL); // 스위치 OFF
-    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL); // 모터 정지
+    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL); // switch OFF
+    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL); // motor stop
 
     printf("============================================================\n");
     printf("  Motor Modeling - Voltage Sweep (%d Steps)\n", N_STEPS);
@@ -151,9 +151,9 @@ void main(void)
     printf("============================================================\n\n");
 
     /* =================================================================
-       3. 전압 시퀀스 미리 출력
+       3. Print voltage sequence
     ================================================================= */
-    printf("[전압 시퀀스 (총 %d스텝)]\n", N_STEPS);
+    printf("[Voltage Sequence (Total %d steps)]\n", N_STEPS);
     for (int i = 0; i < N_STEPS; i++)
     {
         printf("  Step %2d: Vcmd = %.1f V  (%s)\n",
@@ -163,24 +163,24 @@ void main(void)
     printf("\n");
 
     /* =================================================================
-       4. Gyro Bias 추정 (모터 정지 상태)
+       4. Gyro bias estimation (motor stopped)
     ================================================================= */
-    printf("[Step 0] Gyro Bias 추정 - 모터 정지 상태 확인 후 아무 키나 누르세요.\n");
+    printf("[Step 0] Gyro bias estimation - confirm motor is stopped, then press any key.\n");
     getchar();
 
     double Vg_offset = CalculateGyroBias(taskAI, N_BIAS);
 
     /* =================================================================
-       5. 실험 시작 안내
+       5. Experiment start prompt
     ================================================================= */
-    printf("[Step 1] 짐벌 스위치를 켜고 아무 키나 누르세요.\n");
-    printf("※ 긴급 정지: 스페이스바(Spacebar)\n\n");
+    printf("[Step 1] Turn on the gimbal switch, then press any key.\n");
+    printf("  * Emergency stop: Spacebar\n\n");
     getchar();
 
-    GetAsyncKeyState(VK_SPACE); // 버퍼 비우기
+    GetAsyncKeyState(VK_SPACE); // flush buffer
 
     /* =================================================================
-       6. 전압 스텝 루프
+       6. Voltage step loop
     ================================================================= */
     int emergencyStop = 0;
 
@@ -190,33 +190,33 @@ void main(void)
         const char* dir = (step % 2 == 0) ? "CW" : "CCW";
 
         printf("-----------------------------------------\n");
-        printf("[Step %2d/%d]  Vcmd = %.1f V  (%s)  -> 10초 유지\n",
+        printf("[Step %2d/%d]  Vcmd = %.1f V  (%s)  -> hold 10 sec\n",
             step + 1, N_STEPS, Vcmd, dir);
 
-        /* 해당 전압 인가 */
-        DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 3.0, NULL); // 스위치 ON
-        DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, Vcmd, NULL); // 모터 전압
+        /* Apply voltage */
+        DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 3.0, NULL); // switch ON
+        DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, Vcmd, NULL); // motor voltage
 
-        /* 10초 동안 샘플 수집 */
+        /* Collect samples for 10 seconds */
         time_init_step = GetWindowTime();
         int count = 0;
 
-        while (1)                                           // [수정4] do-while → while(1)
+        while (1)
         {
-            /* 긴급 정지 확인 */
+            /* Emergency stop check */
             if (GetAsyncKeyState(VK_SPACE) & 0x8000)
             {
-                printf("\n[긴급 정지] 스페이스바 입력!\n");
+                printf("\n[EMERGENCY STOP] Spacebar pressed!\n");
                 emergencyStop = 1;
                 break;
             }
 
             time_elapsed = (GetWindowTime() - time_init_step) * 0.001; // [sec]
 
-            /* [수정5] 시간 기반 종료 ? 10초 경과 시 루프 탈출 */
+            /* Exit loop after HOLD_TIME seconds */
             if (time_elapsed >= HOLD_TIME) break;
 
-            /* DAQ 읽기 */
+            /* DAQ read */
             error = DAQmxReadAnalogF64(taskAI, 1, 10.0,
                 DAQmx_Val_GroupByChannel,
                 readArray, 2, &sampsPerChanRead, NULL);
@@ -225,14 +225,14 @@ void main(void)
             {
                 char errBuff[2048];
                 DAQmxGetExtendedErrorInfo(errBuff, 2048);
-                printf("DAQ 읽기 에러: %s\n", errBuff);
+                printf("DAQ read error: %s\n", errBuff);
             }
 
             double Vg = readArray[0];
             double Vpot = readArray[1];
             double omega = K_GIMBAL * (Vg - Vg_offset);
 
-            /* 버퍼 오버플로우 방지 */          // [수정6] 버퍼 범위 체크 추가
+            /* Buffer overflow guard */
             if (count < N_HOLD)
             {
                 bufTime[count] = time_elapsed;
@@ -243,7 +243,7 @@ void main(void)
                 count++;
             }
 
-            /* 샘플링 타임 유지 (200Hz = 5ms) */
+            /* Maintain sampling rate (200Hz = 5ms) */
             while (1)
             {
                 time_curr = GetWindowTime();
@@ -253,7 +253,7 @@ void main(void)
         }
 
         /* -----------------------------------------------------------
-           파일 저장                              [수정7] 조건 count > 0 으로 단순화
+           Save to file
         ----------------------------------------------------------- */
         if (count > 0)
         {
@@ -281,15 +281,15 @@ void main(void)
                         bufOmega[i]);
                 }
                 fclose(pFile);
-                printf("  -> 저장 완료: %s  (%d 샘플)\n", filename, count);
+                printf("  -> Saved: %s  (%d samples)\n", filename, count);
             }
             else
             {
-                printf("  !! 파일 열기 실패: %s\n", filename);
+                printf("  !! Failed to open file: %s\n", filename);
             }
         }
 
-        /* 다음 스텝 전에 모터를 정지 위치로 복귀 후 1초 대기 (선 꼬임 방지) */
+        /* Return motor to neutral and wait 1 sec before next step (prevent wire tangling) */
         if (!emergencyStop && step < N_STEPS - 1)
         {
             DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL);
@@ -298,21 +298,20 @@ void main(void)
     }
 
     /* =================================================================
-       7. 종료: 모터 정지, Task 해제
+       7. Shutdown: stop motor, release tasks
     ================================================================= */
     printf("\n============================================================\n");
-    printf("  실험 종료 - 모터 정지합니다.\n");
+    printf("  Experiment finished - stopping motor.\n");
     printf("============================================================\n");
 
-    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL); // 스위치 OFF
-    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL); // 모터 정지
+    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL); // switch OFF
+    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL); // motor stop
 
     DAQmxStopTask(taskAI);   DAQmxClearTask(taskAI);
     DAQmxStopTask(taskAO0);  DAQmxClearTask(taskAO0);
     DAQmxStopTask(taskAO1);  DAQmxClearTask(taskAO1);
 
-    printf("\n[완료] 모든 데이터가 '%s' 폴더에 저장되었습니다.\n", outputDir);
+    printf("\n[Done] All data saved to '%s' folder.\n", outputDir);
     printf("Vg_offset = %.6f V,  K_gimbal = %.4f (rad/s)/V\n",
         Vg_offset, K_GIMBAL);
-
 }

@@ -1,10 +1,22 @@
-// Changed to English because of uni-code problem //
+// =====================================================================
+//  motor_triangle_verify.c
+//  Motor Linearization Verification - Triangle Wave Input
+//  Inverse mapping computed inline 
+// 
+//  Before compiling:
+//    1. Run MATLAB script to get p_cw, p_ccw, K
+//    2. Fill in the TODO section below with those values
+//
+//  Signal design:
+//    Vcmd_ref : triangle wave, amplitude = 1.5 V, period = 10 sec
+//    Duration : 5 cycles = 50 sec
+//    Fs       : 200 Hz
+// =====================================================================
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <windows.h>
-#include <time.h>
 #include <direct.h>
 #include "NIDAQmx.h"
 
@@ -22,79 +34,129 @@ double GetWindowTime(void)
 /* =====================================================================
    [Macro Definitions]
    ===================================================================== */
-#define   SAMPLING_FREQ     (double)( 200.0 )
-#define   SAMPLING_TIME     (double)( 1.0 / SAMPLING_FREQ )
-#define   HOLD_TIME         (double)( 4.0 )          // voltage hold time per step [sec]
-#define   N_HOLD            (int)   ( HOLD_TIME * SAMPLING_FREQ + 100 )
+#define SAMPLING_FREQ   (double)(200.0)
+#define SAMPLING_TIME   (double)(1.0 / SAMPLING_FREQ)
 
-#define   N_BIAS            (int)   ( 200 )
-#define   UNIT_PI           (double)( 3.14159265358979 )
+#define TRI_AMPLITUDE   (double)(2.5)
+#define TRI_PERIOD      (double)(40)
+#define TRI_CYCLES      (int)  (5)
+#define T_TOTAL         (double)(TRI_PERIOD * TRI_CYCLES)   // 50 sec
 
-#define   K_GIMBAL          (double)( 1000.0 / 0.67 * UNIT_PI / 180.0 )
+#define N_SAMPLES_MAX   (int)(T_TOTAL * SAMPLING_FREQ + 200)
+
+#define N_BIAS          (int)(200)
+#define UNIT_PI         (double)(3.14159265358979)
+#define K_GIMBAL        (double)(1000.0 / 0.67 * UNIT_PI / 180.0)
 
    /* =====================================================================
-      [Voltage Step Sequence]
-      - Outside deadzone (0~2V, 3~5V): 0.05V step
-      - Deadzone (2~3V):               0.01V step
-      CW/CCW alternating from 2.5V center
+      TODO: Fill in values printed by MATLAB before compiling
+      =====================================================================
+      Run MATLAB and copy the printed values here:
+
+        fprintf('[CW  fitting] %.4f %.4f %.4f\n', p_cw(1),  p_cw(2),  p_cw(3));
+        fprintf('[CCW fitting] %.4f %.4f %.4f\n', p_ccw(1), p_ccw(2), p_ccw(3));
+        fprintf('K = %.4f\n', K);
+
+      CW  branch valid Vc range : [2.5, 5.0] V
+      CCW branch valid Vc range : [0.0, 2.5] V
+      Deadzone: |omega_target| <= DEAD_THRESH -> Vc = 2.5 V
       ===================================================================== */
 
-      /* Maximum possible steps:
-           Outer range: 2.0V / 0.05V = 40 steps per side x2 = 80
-           Deadzone:    1.0V / 0.01V = 100 steps
-           Total = 180 steps
-      */
-#define   N_STEPS_MAX       200   // with margin
+      /* Linearization gain K [(rad/s)/V] */
+#define K_LIN       (double)(8.3331)       // TODO: replace with MATLAB K
 
-int BuildVoltageSequence(double voltSeq[N_STEPS_MAX])
+/* CW polynomial:  omega = P_CW_A*Vc^2 + P_CW_B*Vc + P_CW_C */
+#define P_CW_A      (double)(-3.8629)       // TODO: replace with p_cw(1)
+#define P_CW_B      (double)(39.9215)       // TODO: replace with p_cw(2)
+#define P_CW_C      (double)(-80.2505)       // TODO: replace with p_cw(3)
+
+/* CCW polynomial: omega = P_CCW_A*Vc^2 + P_CCW_B*Vc + P_CCW_C */
+#define P_CCW_A     (double)(3.5534)       // TODO: replace with p_ccw(1)
+#define P_CCW_B     (double)(1.9357)       // TODO: replace with p_ccw(2)
+#define P_CCW_C     (double)(-22.6890)       // TODO: replace with p_ccw(3)
+
+/* Deadzone threshold [rad/s] */
+#define DEAD_THRESH (double)(0.5)
+
+/* =====================================================================
+   [InverseMap]
+   Computes Vc from Vcmd_ref via inline inverse polynomial mapping.
+   Mirrors MATLAB Section 6 logic exactly.
+
+     1. omega_target = K_LIN * vcmd_ref
+     2. CW  (omega >  DEAD_THRESH): solve CW  quadratic, pick root in [2.5, 5.0]
+        CCW (omega < -DEAD_THRESH): solve CCW quadratic, pick root in [0.0, 2.5]
+        Deadzone                  : Vc = 2.5 V
+     3. Clamp Vc to [0, 5]
+   ===================================================================== */
+double InverseMap(double vcmd_ref)
 {
-    // Build sorted absolute voltage list for one side (above 2.5V),
-    // then mirror for the other side, alternating CW/CCW.
-    //
-    // Strategy: generate deltas from 2.5V center in ascending order,
-    // alternate +delta (CW) and -delta (CCW).
+    double omega_target = K_LIN * vcmd_ref;
+    double Vc = 2.5;
 
-    // Step 1: collect all unique positive deltas
-    double deltas[N_STEPS_MAX];
-    int    nDeltas = 0;
-
-    // Outer upper range: 2.5V -> 5.0V  (delta 0.05 to 2.5, step 0.05)
-    // But split: delta 0.05~0.45 is outer, delta 0.50 is boundary
-    // Deadzone: |Vcmd - 2.5| <= 0.5  =>  delta 0.01 ~ 0.50 (step 0.01)
-    // Outer:    delta 0.55 ~ 2.50    (step 0.05)
-
-    // Deadzone deltas: 0.01, 0.02, ..., 0.50
-    for (int i = 1; i <= 50; i++)
+    if (omega_target > DEAD_THRESH)
     {
-        deltas[nDeltas++] = i * 0.01;
+        /* CW branch */
+        double a = P_CW_A;
+        double b = P_CW_B;
+        double c = P_CW_C - omega_target;
+        double disc = b * b - 4.0 * a * c;
+
+        if (disc >= 0.0)
+        {
+            double r1 = (-b + sqrt(disc)) / (2.0 * a);
+            double r2 = (-b - sqrt(disc)) / (2.0 * a);
+            int    r1ok = (r1 >= 2.5) && (r1 <= 5.0);
+            int    r2ok = (r2 >= 2.5) && (r2 <= 5.0);
+
+            if (r1ok && r2ok) Vc = (r1 < r2) ? r1 : r2;  // pick smaller Vc
+            else if (r1ok)         Vc = r1;
+            else if (r2ok)         Vc = r2;
+            else                   Vc = 2.5;
+        }
     }
-    // Outer deltas: 0.55, 0.60, ..., 2.50
-    for (int i = 1; i <= 39; i++)
+    else if (omega_target < -DEAD_THRESH)
     {
-        deltas[nDeltas++] = 0.50 + i * 0.05;
+        /* CCW branch */
+        double a = P_CCW_A;
+        double b = P_CCW_B;
+        double c = P_CCW_C - omega_target;
+        double disc = b * b - 4.0 * a * c;
+
+        if (disc >= 0.0)
+        {
+            double r1 = (-b + sqrt(disc)) / (2.0 * a);
+            double r2 = (-b - sqrt(disc)) / (2.0 * a);
+            int    r1ok = (r1 >= 0.0) && (r1 <= 2.5);
+            int    r2ok = (r2 >= 0.0) && (r2 <= 2.5);
+
+            if (r1ok && r2ok) Vc = (r1 < r2) ? r1 : r2;  // pick smaller Vc
+            else if (r1ok)         Vc = r1;
+            else if (r2ok)         Vc = r2;
+            else                   Vc = 2.5;
+        }
     }
-    // delta = 2.50 -> Vcmd = 5.0 or 0.0 (boundary)
-    deltas[nDeltas++] = 2.50;
+    /* else: deadzone, Vc = 2.5 */
 
-    // Remove duplicate 2.50 if any (nDeltas already handles it above;
-    // last outer step 0.50 + 39*0.05 = 0.50+1.95 = 2.45, so 2.50 is new)
+    if (Vc < 0.0) Vc = 0.0;
+    if (Vc > 5.0) Vc = 5.0;
+    return Vc;
+}
 
-    // Step 2: interleave CW (+delta) and CCW (-delta)
-    int nSteps = 0;
-    for (int i = 0; i < nDeltas; i++)
-    {
-        double vCW = 2.5 + deltas[i];
-        double vCCW = 2.5 - deltas[i];
+/* =====================================================================
+   [TriangleWave]
+   Starts at 0 V, rises to +A at T/4, falls to -A at 3T/4, back to 0 at T
+   ===================================================================== */
+double TriangleWave(double t, double amplitude, double period)
+{
+    double phase = fmod(t, period) / period;   // [0, 1)
 
-        // Clamp to [0, 5]
-        if (vCW > 5.0) vCW = 5.0;
-        if (vCCW < 0.0) vCCW = 0.0;
-
-        voltSeq[nSteps++] = vCW;   // CW  (even index)
-        voltSeq[nSteps++] = vCCW;  // CCW (odd index)
-    }
-
-    return nSteps;
+    if (phase < 0.25)
+        return  amplitude * (4.0 * phase);
+    else if (phase < 0.75)
+        return  amplitude * (2.0 - 4.0 * phase);
+    else
+        return  amplitude * (4.0 * phase - 4.0);
 }
 
 /* =====================================================================
@@ -106,17 +168,14 @@ double CalculateGyroBias(TaskHandle taskAI, int nSamples)
     int32   sampsPerChanRead;
     double  y_bar = 0.0;
 
-    printf("[Gyro Bias Estimation] Collecting %d samples...\n", nSamples);
-
-    for (int k = 1; k <= nSamples; k++)
-    {
+    printf("[Gyro Bias] Collecting %d samples...\n", nSamples);
+    for (int k = 1; k <= nSamples; k++) {
         DAQmxReadAnalogF64(taskAI, 1, 10.0, DAQmx_Val_GroupByChannel,
             readArray, 2, &sampsPerChanRead, NULL);
         double y_k = readArray[0];
         y_bar = (1.0 - 1.0 / k) * y_bar + (1.0 / k) * y_k;
         Sleep(5);
     }
-
     printf("[Gyro Bias Done] Vg_offset = %.6f V\n\n", y_bar);
     return y_bar;
 }
@@ -126,10 +185,10 @@ double CalculateGyroBias(TaskHandle taskAI, int nSamples)
    ===================================================================== */
 void main(void)
 {
-    int32   error;
-    double  time_curr = 0.0;
-    double  time_init_step = 0.0;
-    double  time_elapsed = 0.0;
+    int32  error;
+    double time_curr = 0.0;
+    double time_start = 0.0;
+    double time_elapsed = 0.0;
 
     TaskHandle taskAI = 0;
     TaskHandle taskAO0 = 0;
@@ -139,202 +198,250 @@ void main(void)
     int32   sampsPerChanRead;
 
     /* Output directory */
-    const char* outputDir = "motor_sweep_data";
+    const char* outputDir = "triangle_verify_data";
     _mkdir(outputDir);
-    printf("Output folder: %s\n\n", outputDir);
 
-    /* Build voltage sequence */
-    double voltSeq[N_STEPS_MAX];
-    int    N_STEPS = BuildVoltageSequence(voltSeq);
+    /* ---------------------------------------------------------------
+       Allocate data buffers on heap
+    --------------------------------------------------------------- */
+    double* bufTime = (double*)malloc(N_SAMPLES_MAX * sizeof(double));
+    double* bufVcmd = (double*)malloc(N_SAMPLES_MAX * sizeof(double));
+    double* bufVc = (double*)malloc(N_SAMPLES_MAX * sizeof(double));
+    double* bufVg = (double*)malloc(N_SAMPLES_MAX * sizeof(double));
+    double* bufPot = (double*)malloc(N_SAMPLES_MAX * sizeof(double));
+    double* bufOmega = (double*)malloc(N_SAMPLES_MAX * sizeof(double));
+    double* bufOmegaTarget = (double*)malloc(N_SAMPLES_MAX * sizeof(double));
 
-    /* Data buffer */
-    double bufTime[N_HOLD];
-    double bufVcmd[N_HOLD];
-    double bufVg[N_HOLD];
-    double bufPot[N_HOLD];
-    double bufOmega[N_HOLD];
+    if (!bufTime || !bufVcmd || !bufVc || !bufVg ||
+        !bufPot || !bufOmega || !bufOmegaTarget)
+    {
+        printf("[ABORT] Memory allocation failed.\n");
+        return;
+    }
 
-    /* =================================================================
-       1. Create tasks
-    ================================================================= */
+    /* ---------------------------------------------------------------
+       Create DAQ tasks
+    --------------------------------------------------------------- */
     DAQmxCreateTask("", &taskAI);
     DAQmxCreateTask("", &taskAO0);
     DAQmxCreateTask("", &taskAO1);
 
     DAQmxCreateAIVoltageChan(taskAI, "Dev3/ai2, Dev3/ai3", "",
-        DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, "");
-    DAQmxCreateAOVoltageChan(taskAO0, "Dev3/ao0", "", 0.0, 5.0, DAQmx_Val_Volts, "");
-    DAQmxCreateAOVoltageChan(taskAO1, "Dev3/ao1", "", 0.0, 5.0, DAQmx_Val_Volts, "");
+        DAQmx_Val_RSE, -10.0, 10.0,
+        DAQmx_Val_Volts, "");
+    DAQmxCreateAOVoltageChan(taskAO0, "Dev3/ao0", "",
+        0.0, 5.0, DAQmx_Val_Volts, "");
+    DAQmxCreateAOVoltageChan(taskAO1, "Dev3/ao1", "",
+        0.0, 5.0, DAQmx_Val_Volts, "");
 
     DAQmxStartTask(taskAI);
     DAQmxStartTask(taskAO0);
     DAQmxStartTask(taskAO1);
 
-    /* =================================================================
-       2. Initialize
-    ================================================================= */
-    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL); // switch OFF
-    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL); // motor stop
+    /* Initialize: switch OFF, motor neutral */
+    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL);
+    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL);
 
     printf("============================================================\n");
-    printf("  Motor Modeling - Voltage Sweep (%d Steps)\n", N_STEPS);
-    printf("  Deadzone : 2.0~3.0V  -> 0.01V step, 4sec hold\n");
-    printf("  Outer    : 0.0~2.0V, 3.0~5.0V -> 0.05V step, 4sec hold\n");
-    printf("  K_gimbal = %.4f [(rad/s)/V]\n", K_GIMBAL);
+    printf("  Motor Linearization Verification - Triangle Wave\n");
+    printf("  Amplitude  : +/-%.1f V\n", TRI_AMPLITUDE);
+    printf("  Period     : %.1f sec\n", TRI_PERIOD);
+    printf("  Cycles     : %d\n", TRI_CYCLES);
+    printf("  Duration   : %.1f sec\n", T_TOTAL);
+    printf("  Fs         : %.0f Hz\n", SAMPLING_FREQ);
+    printf("  K_lin      : %.4f (rad/s)/V\n", K_LIN);
+    printf("  K_gimbal   : %.4f (rad/s)/V\n", K_GIMBAL);
+    printf("  Dead thresh: %.2f rad/s\n", DEAD_THRESH);
+    printf("  p_cw       : [%.4f, %.4f, %.4f]\n", P_CW_A, P_CW_B, P_CW_C);
+    printf("  p_ccw      : [%.4f, %.4f, %.4f]\n", P_CCW_A, P_CCW_B, P_CCW_C);
+    printf("  Output     : %s/\n", outputDir);
     printf("============================================================\n\n");
 
-    /* =================================================================
-       3. Print voltage sequence
-    ================================================================= */
-    printf("[Voltage Sequence (Total %d steps)]\n", N_STEPS);
-    for (int i = 0; i < N_STEPS; i++)
-    {
-        const char* zone = (voltSeq[i] >= 2.0 && voltSeq[i] <= 3.0)
-            ? "DEAD" : "OUT ";
-        printf("  Step %3d: Vcmd = %.2f V  (%s)  [%s]\n",
-            i + 1, voltSeq[i],
-            (i % 2 == 0) ? "CW " : "CCW", zone);
-    }
-    printf("\n");
-
-    /* =================================================================
-       4. Gyro bias estimation
-    ================================================================= */
-    printf("[Step 0] Gyro bias estimation - confirm motor stopped, press any key.\n");
+    /* ---------------------------------------------------------------
+       Gyro bias estimation
+    --------------------------------------------------------------- */
+    printf("[Step 0] Confirm motor is stopped, then press Enter.\n");
     getchar();
     double Vg_offset = CalculateGyroBias(taskAI, N_BIAS);
 
-    /* =================================================================
-       5. Start prompt
-    ================================================================= */
-    printf("[Step 1] Turn on the gimbal switch, then press any key.\n");
+    /* ---------------------------------------------------------------
+       Start prompt
+    --------------------------------------------------------------- */
+    printf("[Step 1] Turn on the gimbal switch, then press Enter.\n");
     printf("  * Emergency stop: Spacebar\n\n");
     getchar();
     GetAsyncKeyState(VK_SPACE);
 
-    /* =================================================================
-       6. Voltage step loop
-    ================================================================= */
-    int emergencyStop = 0;
+    /* ---------------------------------------------------------------
+       Triangle wave measurement loop
+    --------------------------------------------------------------- */
+    printf("[START] Running triangle wave experiment (%.0f sec)...\n\n", T_TOTAL);
 
-    for (int step = 0; step < N_STEPS && !emergencyStop; step++)
+    DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 3.0, NULL);  // switch ON
+
+    time_start = GetWindowTime();
+    int    count = 0;
+    int    emergStop = 0;
+    double last_print_t = -1.0;
+
+    while (1)
     {
-        double      Vcmd = voltSeq[step];
-        const char* dir = (step % 2 == 0) ? "CW" : "CCW";
-        const char* zone = (Vcmd >= 2.0 && Vcmd <= 3.0) ? "DEADZONE" : "OUTER";
-
-        printf("-----------------------------------------\n");
-        printf("[Step %3d/%d]  Vcmd = %.2f V  (%s)  [%s]\n",
-            step + 1, N_STEPS, Vcmd, dir, zone);
-
-        /* Apply voltage */
-        DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 3.0, NULL);
-        DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, Vcmd, NULL);
-
-        time_init_step = GetWindowTime();
-        int count = 0;
-
-        while (1)
-        {
-            if (GetAsyncKeyState(VK_SPACE) & 0x8000)
-            {
-                printf("\n[EMERGENCY STOP] Spacebar pressed!\n");
-                emergencyStop = 1;
-                break;
-            }
-
-            time_elapsed = (GetWindowTime() - time_init_step) * 0.001;
-            if (time_elapsed >= HOLD_TIME) break;
-
-            error = DAQmxReadAnalogF64(taskAI, 1, 10.0,
-                DAQmx_Val_GroupByChannel,
-                readArray, 2, &sampsPerChanRead, NULL);
-            if (error != 0)
-            {
-                char errBuff[2048];
-                DAQmxGetExtendedErrorInfo(errBuff, 2048);
-                printf("DAQ read error: %s\n", errBuff);
-            }
-
-            double Vg = readArray[0];
-            double Vpot = readArray[1];
-            double omega = K_GIMBAL * (Vg - Vg_offset);
-
-            if (count < N_HOLD)
-            {
-                bufTime[count] = time_elapsed;
-                bufVcmd[count] = Vcmd;
-                bufVg[count] = Vg;
-                bufPot[count] = Vpot;
-                bufOmega[count] = omega;
-                count++;
-            }
-
-            while (1)
-            {
-                time_curr = GetWindowTime();
-                if (time_curr - time_init_step - (count - 1) * SAMPLING_TIME * 1000.0
-                    >= SAMPLING_TIME * 1000.0) break;
-            }
+        /* Emergency stop */
+        if (GetAsyncKeyState(VK_SPACE) & 0x8000) {
+            printf("\n[EMERGENCY STOP] Spacebar pressed!\n");
+            emergStop = 1;
+            break;
         }
 
-        /* Save to file */
-        if (count > 0)
-        {
-            char filename[256];
-            sprintf(filename, "%s/step_%03d_V%.2f_%s.out",
-                outputDir, step + 1, Vcmd, dir);
+        time_elapsed = (GetWindowTime() - time_start) * 0.001;
+        if (time_elapsed >= T_TOTAL) break;
 
-            FILE* pFile = fopen(filename, "w+t");
-            if (pFile)
-            {
-                fprintf(pFile, "%% Motor Sweep Step %d/%d\n", step + 1, N_STEPS);
-                fprintf(pFile, "%% Vcmd       = %.4f [V]\n", Vcmd);
-                fprintf(pFile, "%% Direction  = %s\n", dir);
-                fprintf(pFile, "%% Zone       = %s\n", zone);
-                fprintf(pFile, "%% Vg_offset  = %.6f [V]\n", Vg_offset);
-                fprintf(pFile, "%% K_gimbal   = %.6f [(rad/s)/V]\n\n", K_GIMBAL);
-                fprintf(pFile, "Time[s]              Vcmd[V]              "
-                    "Vg_raw[V]            Pot[V]               Omega[rad/s]\n");
-
-                for (int i = 0; i < count; i++)
-                {
-                    fprintf(pFile, "%20.10f %20.10f %20.10f %20.10f %20.10f\n",
-                        bufTime[i], bufVcmd[i], bufVg[i],
-                        bufPot[i], bufOmega[i]);
-                }
-                fclose(pFile);
-                printf("  -> Saved: %s  (%d samples)\n", filename, count);
-            }
-            else
-            {
-                printf("  !! Failed to open file: %s\n", filename);
-            }
+        /* Progress report every 10 sec */
+        if (time_elapsed - last_print_t >= 10.0) {
+            int cycle_now = (int)(time_elapsed / TRI_PERIOD) + 1;
+            printf("  t = %5.1f sec  (cycle %d/%d)\n",
+                time_elapsed, cycle_now, TRI_CYCLES);
+            last_print_t = time_elapsed;
         }
 
-        /* Neutral pause between steps */
-        if (!emergencyStop && step < N_STEPS - 1)
-        {
-            DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL);
-            Sleep(1000);
+        /* Triangle wave command */
+        double vcmd_ref = TriangleWave(time_elapsed, TRI_AMPLITUDE, TRI_PERIOD);
+
+        /* Inline inverse mapping: Vcmd_ref -> Vc */
+        double Vc = InverseMap(vcmd_ref);
+
+        /* Target omega */
+        double omega_target = K_LIN * vcmd_ref;
+
+        /* Apply Vc */
+        DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, Vc, NULL);
+
+        /* DAQ read */
+        error = DAQmxReadAnalogF64(taskAI, 1, 10.0,
+            DAQmx_Val_GroupByChannel,
+            readArray, 2,
+            &sampsPerChanRead, NULL);
+        if (error != 0) {
+            char errBuff[2048];
+            DAQmxGetExtendedErrorInfo(errBuff, 2048);
+            printf("DAQ read error: %s\n", errBuff);
+        }
+
+        double Vg = readArray[0];
+        double Vpot = readArray[1];
+        double omega = K_GIMBAL * (Vg - Vg_offset);
+
+        /* Store */
+        if (count < N_SAMPLES_MAX) {
+            bufTime[count] = time_elapsed;
+            bufVcmd[count] = vcmd_ref;
+            bufVc[count] = Vc;
+            bufVg[count] = Vg;
+            bufPot[count] = Vpot;
+            bufOmega[count] = omega;
+            bufOmegaTarget[count] = omega_target;
+            count++;
+        }
+
+        /* Wait for next sampling interval */
+        while (1) {
+            time_curr = GetWindowTime();
+            if ((time_curr - time_start) * 0.001
+                - (count - 1) * SAMPLING_TIME
+                >= SAMPLING_TIME) break;
         }
     }
 
-    /* =================================================================
-       7. Shutdown
-    ================================================================= */
-    printf("\n============================================================\n");
-    printf("  Experiment finished - stopping motor.\n");
-    printf("============================================================\n");
+    /* Motor to neutral */
+    DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL);
 
+    printf("\n[DONE] Collected %d samples  (%.2f sec)\n\n",
+        count, (count > 0 ? bufTime[count - 1] : 0.0));
+
+    /* ---------------------------------------------------------------
+       Save result file
+    --------------------------------------------------------------- */
+    char filename[256];
+    sprintf(filename, "%s/triangle_verify_A%.1f_T%.0f_%dcyc.out",
+        outputDir, TRI_AMPLITUDE, TRI_PERIOD, TRI_CYCLES);
+
+    FILE* pFile = fopen(filename, "w+t");
+    if (pFile)
+    {
+        fprintf(pFile,
+            "%% Motor Triangle Wave Linearization Verification\n"
+            "%% Amplitude    = %.4f [V]\n"
+            "%% Period       = %.4f [sec]\n"
+            "%% Cycles       = %d\n"
+            "%% Duration     = %.4f [sec]\n"
+            "%% K_lin        = %.6f [(rad/s)/V]\n"
+            "%% K_gimbal     = %.6f [(rad/s)/V]\n"
+            "%% Vg_offset    = %.6f [V]\n"
+            "%% p_cw         = [%.6f, %.6f, %.6f]\n"
+            "%% p_ccw        = [%.6f, %.6f, %.6f]\n\n",
+            TRI_AMPLITUDE, TRI_PERIOD, TRI_CYCLES, T_TOTAL,
+            K_LIN, K_GIMBAL, Vg_offset,
+            P_CW_A, P_CW_B, P_CW_C,
+            P_CCW_A, P_CCW_B, P_CCW_C);
+
+        fprintf(pFile,
+            "Time[s]              Vcmd_ref[V]          "
+            "Vc[V]                Vg_raw[V]            "
+            "Pot[V]               Omega[rad/s]         "
+            "Omega_target[rad/s]\n");
+
+        for (int i = 0; i < count; i++) {
+            fprintf(pFile,
+                "%20.10f %20.10f %20.10f %20.10f %20.10f %20.10f %20.10f\n",
+                bufTime[i], bufVcmd[i], bufVc[i],
+                bufVg[i], bufPot[i], bufOmega[i],
+                bufOmegaTarget[i]);
+        }
+        fclose(pFile);
+        printf("[Saved] %s  (%d rows)\n", filename, count);
+    }
+    else
+    {
+        printf("[ERROR] Failed to open output file: %s\n", filename);
+    }
+
+    /* ---------------------------------------------------------------
+       RMS / peak error statistics
+    --------------------------------------------------------------- */
+    if (count > 0 && !emergStop)
+    {
+        double rms = 0.0;
+        double peak_err = 0.0;
+        for (int i = 0; i < count; i++) {
+            double e = bufOmega[i] - bufOmegaTarget[i];
+            rms += e * e;
+            if (fabs(e) > fabs(peak_err)) peak_err = e;
+        }
+        rms = sqrt(rms / count);
+
+        printf("\n------------------------------------------------------------\n");
+        printf("  Verification Statistics (%d samples)\n", count);
+        printf("  RMS error  : %.4f rad/s\n", rms);
+        printf("  Peak error : %+.4f rad/s\n", peak_err);
+        printf("------------------------------------------------------------\n");
+    }
+
+    /* ---------------------------------------------------------------
+       Shutdown
+    --------------------------------------------------------------- */
     DAQmxWriteAnalogScalarF64(taskAO0, 1, 10.0, 0.0, NULL);
     DAQmxWriteAnalogScalarF64(taskAO1, 1, 10.0, 2.5, NULL);
 
-    DAQmxStopTask(taskAI);   DAQmxClearTask(taskAI);
-    DAQmxStopTask(taskAO0);  DAQmxClearTask(taskAO0);
-    DAQmxStopTask(taskAO1);  DAQmxClearTask(taskAO1);
+    DAQmxStopTask(taskAI);  DAQmxClearTask(taskAI);
+    DAQmxStopTask(taskAO0); DAQmxClearTask(taskAO0);
+    DAQmxStopTask(taskAO1); DAQmxClearTask(taskAO1);
 
-    printf("\n[Done] All data saved to '%s' folder.\n", outputDir);
-    printf("Vg_offset = %.6f V,  K_gimbal = %.4f (rad/s)/V\n",
-        Vg_offset, K_GIMBAL);
+    free(bufTime);  free(bufVcmd);  free(bufVc);
+    free(bufVg);    free(bufPot);   free(bufOmega);
+    free(bufOmegaTarget);
+
+    printf("\n[Done] Output folder: '%s/'\n", outputDir);
+    printf("  Vg_offset : %.6f V\n", Vg_offset);
+    printf("  K_lin     : %.4f (rad/s)/V\n", K_LIN);
+    printf("  K_gimbal  : %.4f (rad/s)/V\n", K_GIMBAL);
 }

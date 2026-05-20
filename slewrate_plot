@@ -1,0 +1,100 @@
+%% Vcmd & Vg vs Time Plot + Slew Rate Slope
+clear; clc; close all;
+
+%% 1. 데이터 로드
+filename = 'continuous_sequence_seg3s_20seg.out';
+data = readmatrix(filename, 'NumHeaderLines', 12, 'FileType', 'text');
+time     = data(:, 1);  % [s]
+Vcmd_ref = data(:, 2);  % [V]
+Vout     = data(:, 4);  % [V]
+
+Voffset = 1.336742;
+K_g     = 26.0497;
+K_lin   = 8.1278;
+Vg = (K_g * (Vout - Voffset)) / K_lin;
+
+%% 2. 세그먼트 분리
+vcmd_diff  = diff(Vcmd_ref);
+trans_idx  = find(vcmd_diff ~= 0);
+seg_starts = [1; trans_idx + 1];
+seg_ends   = [trans_idx; length(time)];
+
+step_segs = find(Vcmd_ref(seg_starts) ~= 0);
+
+%% 3. 결과 저장
+slew_rate    = nan(length(step_segs), 1);  % 최대 dVg/dt [V/s]
+slew_t_point = nan(length(step_segs), 1);  % 최대 기울기 발생 시간
+
+%% 4. Plot
+figure('Name', 'Vcmd & Vg vs Time', 'Position', [100 100 1200 400]);
+stairs(time, Vcmd_ref, 'b', 'LineWidth', 1.5, 'DisplayName', 'V_{cmd}');
+hold on;
+plot(time, Vg, 'r', 'LineWidth', 1.0, 'DisplayName', 'V_g');
+
+for i = 1:length(step_segs)
+    k   = step_segs(i);
+    idx = seg_starts(k) : seg_ends(k);
+
+    dt     = diff(time(idx));
+    dVg    = diff(Vg(idx));
+    dVg_dt = dVg ./ dt;
+
+    vg_change = Vg(seg_ends(k)) - Vg(seg_starts(k));
+    if vg_change == 0
+        continue;
+    end
+
+    sign_d   = sign(vg_change);
+    signed_d = sign_d * dVg_dt;
+
+    % 최대 dVg/dt 인덱스
+    [max_d, max_i] = max(signed_d);
+    if max_d <= 0
+        continue;
+    end
+
+    slew_rate(i)    = sign_d * max_d;           % 부호 포함 슬루레이트
+    slew_t_point(i) = time(idx(max_i));         % 발생 시간
+
+    % 해당 구간 두 점으로 기울기 선 시각화
+    t1 = time(idx(max_i));
+    t2 = time(idx(max_i + 1));
+    v1 = Vg(idx(max_i));
+    v2 = Vg(idx(max_i + 1));
+
+    % 선 연장 (전후 0.05s)
+    margin = 0.05;
+    t_line = linspace(t1 - margin, t2 + margin, 50);
+    v_line = v1 + sign_d * max_d * (t_line - t1);
+    plot(t_line, v_line, 'm-', 'LineWidth', 2.5, ...
+        'DisplayName', sprintf('Slew Seg%d: %.2f V/s', k, slew_rate(i)));
+
+    % 슬루 두 점 강조
+    scatter([t1 t2], [v1 v2], 30, 'm', 'filled', 'HandleVisibility', 'off');
+end
+
+xlabel('Time [s]');
+ylabel('Vcmd [V]');
+title('V_{cmd} & V_g vs Time  —  Slew Rate');
+legend('Location', 'best');
+grid on;
+
+%% 5. 결과 출력
+fprintf('=== Slew Rate Limit 결과 (최대 dVg/dt) ===\n');
+fprintf('%4s  %8s  %14s  %14s\n', 'Seg', 'Vcmd[V]', 'T_peak[s]', 'Slew Rate [V/s]');
+for i = 1:length(step_segs)
+    k = step_segs(i);
+    if ~isnan(slew_rate(i))
+        fprintf('%4d  %8.2f  %14.4f  %14.4f\n', ...
+            k, Vcmd_ref(seg_starts(k)), slew_t_point(i), slew_rate(i));
+    else
+        fprintf('%4d  %8.2f  %14s  %14s\n', ...
+            k, Vcmd_ref(seg_starts(k)), '-', '감지 실패');
+    end
+end
+
+valid = slew_rate(~isnan(slew_rate));
+if ~isempty(valid)
+    fprintf('\n  ▶ 전체 평균 Slew Rate Limit : %.4f V/s\n', mean(abs(valid)));
+    fprintf('  ▶ 표준편차                  : %.4f V/s\n',  std(abs(valid)));
+end

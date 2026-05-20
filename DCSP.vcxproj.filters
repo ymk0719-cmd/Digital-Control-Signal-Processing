@@ -15,18 +15,21 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <Library Include="NIDAQmx.lib">
-      <Filter>리소스 파일</Filter>
-    </Library>
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="main.c">
+    <ClCompile Include="GimbalControl.c">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="_macro.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="NIDAQmx.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Library Include="NIDAQmx.lib">
+      <Filter>리소스 파일</Filter>
+    </Library>
   </ItemGroup>
 </Project>

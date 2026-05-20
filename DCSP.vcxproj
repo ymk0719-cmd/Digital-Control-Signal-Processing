@@ -19,13 +19,14 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <Library Include="NIDAQmx.lib" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="main.c" />
+    <ClCompile Include="GimbalControl.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NIDAQmx.h" />
+    <ClInclude Include="_macro.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Library Include="NIDAQmx.lib" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>18.0</VCProjectVersion>

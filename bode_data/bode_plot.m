@@ -1,14 +1,23 @@
-data = readmatrix('bode_data\bode_result.out', ...
-               'FileType','text', 'NumHeaderLines', 6);
-freq      = data(:,1);
-gain_dB   = data(:,2);
-phase_deg = data(:,3);
+%% 
+% ---------------------------------------------%
+%         transfer function estimation         %
+% ---------------------------------------------%
 
-figure;
-subplot(2,1,1);
-semilogx(freq, gain_dB, 'bo-', 'LineWidth', 1.5, 'MarkerSize', 8);
-ylabel('Gain (dB)'); grid on; title('Bode Plot');
+close all; clear all; clc ;
 
-subplot(2,1,2);
-semilogx(freq, phase_deg, 'ro-', 'LineWidth', 1.5, 'MarkerSize', 8);
-ylabel('Phase (deg)'); xlabel('Frequency (Hz)'); grid on;
+data = readmatrix("bode_result.out", 'FileType', 'text');
+
+tblOmega    = 2 * pi * data(:,1);          % Hz → rad/s
+tblMagAtt   = data(:,2);                   % [dB]
+tblPhsDelay = data(:,3) * pi / 180;        % deg → rad
+
+% ✅ 핵심 수정: dB → linear 변환
+tblMagLin   = 10.^(tblMagAtt / 20);
+tblFreqResp = tblMagLin .* exp(1j * tblPhsDelay);
+
+Nnum = 0;
+Nden = 2;
+[num, den] = invfreqs(tblFreqResp, tblOmega, Nnum, Nden);
+EstTF = tf(num, den);
+
+figure; bode(EstTF); grid on;
